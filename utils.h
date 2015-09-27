@@ -1,6 +1,7 @@
 #ifndef UTILS_H
 #define UTILS_H
 #define _GNU_SOURCE 
+#include "socketworks.h"
 
 unsigned char *getItem(int64_t key);
 int getItemLen(int64_t key);
@@ -19,6 +20,8 @@ char *strip(char *s);
 int split (char **rv, char *s, int lrv, char sep);
 void set_signal_handler ();
 int becomeDaemon ();
+char *readfile(char *fn, char *ctype, int *len);
+void process_file(sockets *so, char *s, int len, char *ctype);
 
 //#define proxy_log(level, fmt, ...) _proxy_log(level, fmt"\n", ##__VA_ARGS__)
 
@@ -33,5 +36,39 @@ int becomeDaemon ();
 #define malloc1(a) mymalloc(a,__FILE__,__LINE__)
 #define free1(a) myfree(a,__FILE__,__LINE__)
 
+#define VAR_UINT8 1
+#define VAR_INT8 2
+#define VAR_UINT16 3
+#define VAR_INT16 4
+#define VAR_INT 5
+#define VAR_STRING 6
+#define VAR_PSTRING 7
+#define VAR_FLOAT 8
+#define VAR_HEX 9
+#define VAR_ARRAY_UINT8 10
+#define VAR_ARRAY_INT8 11
+#define VAR_ARRAY_UINT16 12
+#define VAR_ARRAY_INT16 13
+#define VAR_ARRAY_INT 14
+#define VAR_ARRAY_FLOAT 15
+#define VAR_ARRAY_HEX 16
+#define VAR_ARRAY_STRING 17
+#define VAR_ARRAY_PSTRING 18
+#define VAR_FUNCTION_INT 19
+#define VAR_FUNCTION_STRING 20
+
+typedef int (*get_data_int)(int p);
+typedef char * (*get_data_string)(int p, char *dest, int max_len);
+
+
+typedef struct struct_symbols
+{
+	char *name;
+	int type;
+	void *addr;
+	float multiplier;       // multiply the value of the variable
+	int len;
+	int skip;
+} _symbols;
 
 #endif

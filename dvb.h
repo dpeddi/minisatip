@@ -60,7 +60,7 @@ typedef struct struct_transponder
 	fe_delivery_system_t sys;
 	int freq;
 	int inversion;
-	int mod;
+	int mtype;
 	int fe;
 
 	// DVB-T
@@ -73,7 +73,6 @@ typedef struct struct_transponder
 
 	// DVB-S2
 	int ro;
-	int mtype;
 	int plts;
 	int fec;
 	int sr;
@@ -86,6 +85,7 @@ typedef struct struct_transponder
 	int uslot; // unicable/jess slot
 	int ufreq; // unicable/jess frequency
 	int pin;
+	int committed_no, uncommitted_no; //diseqc informations
 	int old_pol, old_hiband, old_diseqc; // used to cache the diseqc position
 	
 	// DVB-C2

@@ -10,6 +10,7 @@ typedef struct ca_device ca_device_t;
 #define DVR_BUFFER 30*1024*188
 #define MAX_STREAMS_PER_PID 8
 #define ADAPTER_BUFFER (128 + 5)*DVB_FRAME
+#define ADAPTER_TIMEOUT 10000
 
 #define TYPE_PMT 1
 #define TYPE_ECM 2
@@ -40,22 +41,27 @@ typedef int (* Open_device)(void *ad);
 typedef int (* Tune) (int aid, transponder * tp);
 typedef fe_delivery_system_t (* Dvb_delsys) (int aid, int fd, fe_delivery_system_t *sys);
 
+#define ADAPTER_DVB 1
+#define ADAPTER_SATIP 2
+#define MAX_DELSYS 10
 
 typedef struct struct_adapter
 {
-	int enabled;
+	char enabled;
+	char type; // available on the system 
 	int force_disable;
 	int fe,	dvr, ca;
 	int pa, fn;		
 		// physical adapter, physical frontend number
-	fe_delivery_system_t sys[10]; 
+	fe_delivery_system_t sys[MAX_DELSYS]; 
 	transponder tp;
 	SPid pids[MAX_PIDS];
 	int master_sid;				 // first SID, the one that controls the tuning
 	int sid_cnt;				 //number of streams
 	int sock, fe_sock;
 	int do_tune;
-	char *buf;					 // 7 rtp packets = MAX_PACK, 7 frames / packet
+	int force_close;
+	unsigned char *buf;					 // 7 rtp packets = MAX_PACK, 7 frames / packet
 	int rlen,rtime;
 	int last_sort;
 	int status_cnt;
@@ -68,6 +74,7 @@ typedef struct struct_adapter
 	int uslot; // unicable/jess slot
 	int ufreq; // unicable/jess frequency	
 	int pin;
+	int committed_no, uncommitted_no; // diseqc info
 	int id;
 	int pat_processed, transponder_id, pat_ver;
 	ca_device_t * ca_device;
@@ -81,7 +88,8 @@ typedef struct struct_adapter
 	int err, expect_reply, last_connect;
 	int wp, qp; // written packet, queued packet
 	int want_commit, want_tune, sent_transport;
-	uint8_t satip_fe;
+	char ignore_packets; // ignore packets coming from satip server while tuning
+	char satip_fe;
 	uint32_t rcvp, repno, rtp_miss, rtp_ooo;   // rtp statstics
 	uint16_t rtp_seq;
 	Set_pid set_pid;
@@ -95,15 +103,11 @@ typedef struct struct_adapter
 
 
 int init_hw ();
-int getS2Adapters ();
-int getTAdapters ();
-int getCAdapters ();
-int getT2Adapters ();
-int getC2Adapters ();
+int getAdaptersCount();
 void close_adapter (int na);
 int get_free_adapter (int freq, int pol, int msys, int src);
 int set_adapter_for_stream (int i, int a);
-int close_adapter_for_stream (int sid, int aid);
+void close_adapter_for_stream(int sid, int aid);
 int set_adapter_parameters (int aid, int sid, transponder * tp);
 void mark_pids_deleted (int aid, int sid, char *pids);
 int mark_pids_add (int sid, int aid, char *pids);
@@ -111,15 +115,18 @@ int mark_pid_add(int sid, int aid, int _pid);
 void mark_pid_deleted(int aid, int sid, int _pid, SPid *p);
 int update_pids (int aid);
 SPid *find_pid(int aid, int p);
-adapter * get_adapter1 (int aid, char *file, int line);
-char *describe_adapter (int sid, int aid);
+adapter * get_adapter1 (int aid, char *file, int line, int warning);
+char *describe_adapter (int sid, int aid, char *dad, int ld);
 void dump_pids (int aid);
 void sort_pids (int aid);
 void enable_adapters(char *o);
 void set_unicable_adapters(char *o, int type);
+void set_diseqc_adapters(char *o);
 void reset_pids_type(int aid);
 void reset_pids_type_for_key(int aid, int key);
 int delsys_match(adapter *ad, int del_sys);
-int get_enabled_pids(adapter *ad);
-#define get_adapter(a) get_adapter1(a, __FILE__, __LINE__)
+int get_enabled_pids(adapter *ad, int *pids, int lpids);
+char *get_adapter_pids(int aid, char *dest, int max_size);
+#define get_adapter(a) get_adapter1(a, __FILE__, __LINE__,1)
+#define get_adapter_nw(a) get_adapter1(a, __FILE__, __LINE__,0)
 #endif							 /*  */

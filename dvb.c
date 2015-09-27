@@ -192,9 +192,9 @@ char *fe_pol[] =
 #define make_func(a) \
 char * get_##a(int i) \
 { \
-	if(i>=0 && i<sizeof(fe_##a)) \
+	if(i>=0 && i< (int)sizeof(fe_##a)) { \
 		if(fe_##a[i][0] == 32)return ""; \
-			else return fe_##a[i];  \
+			else return fe_##a[i]; }  \
 	return "NONE"; \
 } 
 make_func ( pilot );
@@ -228,6 +228,7 @@ int dvb_open_device(adapter *ad)
 		ad->fe = ad->dvr = -1;
 		return 1;
 	}
+	ad->type = ADAPTER_DVB;
 #ifndef DISABLE_DVBCA
 	if(ad->ca > 0)
 		close(ad->ca);
@@ -235,6 +236,7 @@ int dvb_open_device(adapter *ad)
 	if (ad->ca > -1)
 		ad->ca_device = (ca_device_t *)ca_init(ad->ca);
 #endif
+		
 	LOG ("opened DVB adapter %d fe:%d dvr:%d", ad->id, ad->fe, ad->dvr);
 	if (ioctl (ad->dvr, DMX_SET_BUFFER_SIZE, opts.dvr_buffer) < 0)
 		perror ("couldn't set DVR buffer size");
@@ -243,16 +245,35 @@ int dvb_open_device(adapter *ad)
 	return 0;
 }
 
-
-int send_diseqc(int fd, int pos, int pol, int hiband)
+void diseqc_cmd(int fd, int times, char *str, struct dvb_diseqc_master_cmd *cmd)
 {
+	int i;
+	for( i = 0; i < times; i++)
+	{
+		usleep(15000);
+		if (ioctl(fd, FE_DISEQC_SEND_MASTER_CMD, cmd) == -1)
+			LOG( "send_diseqc: FE_DISEQC_SEND_MASTER_CMD %s failed for fd %d: %s", str, fd, strerror(errno));	
+	}
+
+}
+
+
+int send_diseqc(int fd, int pos, int pol, int hiband, int committed_no, int uncommitted_no)
+{
+	int uncommitted_first = 0;
 /* DiSEqC 1.0 */
 	struct dvb_diseqc_master_cmd cmd = { {0xe0, 0x10, 0x38, 0xf0, 0x00, 0x00}, 4 };
  /* DiSEqC 1.1 */
 	struct dvb_diseqc_master_cmd uncmd = { {0xe0, 0x10, 0x39, 0xf0, 0x00, 0x00}, 4 };
 	cmd.msg[3] = 0xf0 | ( ((pos << 2) & 0x0c) | (hiband ? 1 : 0) | (pol ? 2 : 0));
-	uncmd.msg[3] = 0xf0 | ( (pos & 0x0c) | (hiband ? 1 : 0) | (pol ? 2 : 0));
+	uncmd.msg[3] = 0xf0 |  (pos & 0x0f);
 
+	if(uncommitted_no > committed_no)
+		uncommitted_first = 1;
+	
+	if(committed_no == 0 && uncommitted_no == 0)
+		committed_no = 1;
+	
 	LOGL(3, "send_diseqc fd %d, pos = %d, pol = %d, hiband = %d, diseqc => %02x %02x %02x %02x %02x",
                   fd, pos, pol, hiband, cmd.msg[0], cmd.msg[1], cmd.msg[2], cmd.msg[3], cmd.msg[4]);
 
@@ -262,14 +283,13 @@ int send_diseqc(int fd, int pos, int pol, int hiband)
 	if (ioctl(fd, FE_SET_VOLTAGE, pol ? SEC_VOLTAGE_18 : SEC_VOLTAGE_13) == -1)
 		LOG("send_diseqc: FE_SET_VOLTAGE failed for fd %d: %s", fd, strerror(errno));
 
-	usleep(15000);
-	if (ioctl(fd, FE_DISEQC_SEND_MASTER_CMD, &cmd) == -1)
-		LOG( "send_diseqc: FE_DISEQC_SEND_MASTER_CMD failed for fd %d: %s", fd, strerror(errno));	
+	if( uncommitted_first )
+		diseqc_cmd(fd, uncommitted_no, "uncommitted", &uncmd);
+		
+	diseqc_cmd(fd, committed_no, "committed", &cmd);	
 	
-	usleep(15000);
-	if (ioctl(fd, FE_DISEQC_SEND_MASTER_CMD, &uncmd) == -1)
-		LOG( "send_diseqc: FE_DISEQC_SEND_MASTER_CMD uncommitted failed for fd %d: %s", fd, strerror(errno));	
-	
+	if( !uncommitted_first )
+		diseqc_cmd(fd, uncommitted_no, "uncommitted", &uncmd);
 	
 	usleep(15000);
 	if (ioctl(fd, FE_DISEQC_SEND_BURST, (pos & 1)?SEC_MINI_B : SEC_MINI_A ) == -1)
@@ -362,8 +382,6 @@ int send_jess(int fd, int freq, int pos, int pol, int hiband, int slot, int ufre
 
 int setup_switch (int frontend_fd, transponder *tp)
 {
-	int i;
-	int err;
 	int hiband = 0;
 	int diseqc = (tp->diseqc > 0)? tp->diseqc - 1: 0;
 	int freq = tp->freq;
@@ -391,7 +409,7 @@ int setup_switch (int frontend_fd, transponder *tp)
 	}else
 	{
 		if(tp->old_pol != pol || tp->old_hiband != hiband || tp->old_diseqc != diseqc)
-			send_diseqc(frontend_fd, diseqc, pol, hiband);
+			send_diseqc(frontend_fd, diseqc, pol, hiband, tp->committed_no, tp->uncommitted_no);
 		else 
 			LOGL(3, "Skip sending diseqc commands since the switch position doesn't need to be changed: pol %d, hiband %d, switch position %d", pol, hiband, diseqc);
 	}
@@ -407,12 +425,10 @@ int setup_switch (int frontend_fd, transponder *tp)
 int dvb_tune (int aid, transponder * tp)
 {
 	uint32_t if_freq = 0;
-	int res, bclear, bpol;
+	int bclear, bpol;
 	adapter *ad = get_adapter(aid);
 	int fd_frontend = ad->fe;
 
-	struct dvb_frontend_event event;
-	
 	int freq = tp->freq;
 	struct dtv_properties *p;
 	struct dvb_frontend_event ev;
@@ -525,10 +541,6 @@ int dvb_tune (int aid, transponder * tp)
 		case SYS_DVBS:
 		case SYS_DVBS2:
 
-			if (tp->sys == SYS_DVBS2 && tp->mtype == 0)
-				tp->mtype = PSK_8;
-			if (tp->sys == SYS_DVBS && tp->mtype == 0)
-				tp->mtype = QPSK;
 			bpol = getTick();
 			if_freq = setup_switch (fd_frontend, tp);
 			if(if_freq < MIN_FRQ_DVBS || if_freq > MAX_FRQ_DVBS)
@@ -557,10 +569,6 @@ int dvb_tune (int aid, transponder * tp)
 			if(tp->freq < MIN_FRQ_DVBT || tp->freq > MAX_FRQ_DVBT)
 				LOG_AND_RETURN(-404, "Frequency %d is not within range ", tp->freq);
 
-			if (tp->sys == SYS_DVBT && tp->mtype == 0)
-				tp->mtype = QAM_AUTO;
-			if (tp->sys == SYS_DVBT2 && tp->mtype == 0)
-				tp->mtype = QAM_AUTO;
 			p = &dvbt_cmdseq;
 			p->props[DELSYS].u.data = tp->sys;
 			p->props[FREQUENCY].u.data = freq * 1000;
@@ -587,8 +595,6 @@ int dvb_tune (int aid, transponder * tp)
 				LOG_AND_RETURN(-404, "Frequency %d is not within range ", tp->freq);
 		
 			p = &dvbc_cmdseq;
-			if(tp->mtype == 0)
-				tp->mtype = QAM_AUTO;
 			p->props[DELSYS].u.data = tp->sys;
 			p->props[FREQUENCY].u.data = freq * 1000;
 			p->props[INVERSION].u.data = tp->inversion;
@@ -634,7 +640,7 @@ int dvb_tune (int aid, transponder * tp)
 			
 			break;
 
-}
+	}
 
 	/* discard stale QPSK events */
 	while (1)
@@ -685,7 +691,10 @@ dvb_set_pid (adapter *a, uint16_t i_pid)
 
 	if (ioctl (fd, DMX_SET_PES_FILTER, &s_filter_params) < 0)
 	{
-		LOG ("failed setting filter on %d (%s)", i_pid, strerror (errno));
+		int pids[MAX_PIDS];
+		int ep;
+		ep = get_enabled_pids(a, (int *)pids, MAX_PIDS);
+		LOG ("failed setting filter on %d (%s), enabled pids %d", i_pid, strerror (errno), ep);
 		return -1;
 	}
 
@@ -811,7 +820,6 @@ detect_dvb_parameters (char *s, transponder * tp)
 	tp->sys = -1;
 	tp->freq = -1;
 	tp->inversion = -1;
-	tp->mod = -1;
 	tp->hprate = -1;
 	tp->tmode = -1;
 	tp->gi = -1;
@@ -838,7 +846,7 @@ detect_dvb_parameters (char *s, transponder * tp)
 	if (*s == 0)
 		LOG_AND_RETURN (0, "no ? found in URL");
 
-	*s++;
+	s++;
 	if (strstr(s, "freq="))
 			init_dvb_parameters(tp);
 
@@ -901,7 +909,7 @@ detect_dvb_parameters (char *s, transponder * tp)
 	}
 	
 	if (tp->pids && strncmp (tp->pids, "none", 3) == 0)
-		tp->pids = NULL;
+		tp->pids = "";
 		
 	//      if(!msys)INVALID_URL("no msys= found in URL");
 	//      if(freq<10)INVALID_URL("no freq= found in URL or frequency invalid");
@@ -946,8 +954,6 @@ copy_dvb_parameters (transponder * s, transponder * d)
 		d->freq = s->freq;
 	if (s->inversion != -1)
 		d->inversion = s->inversion;
-	if (s->mod != -1)
-		d->mod = s->mod;
 	if (s->hprate != -1)
 		d->hprate = s->hprate;
 	if (s->tmode != -1)
@@ -991,6 +997,17 @@ copy_dvb_parameters (transponder * s, transponder * d)
 	if(d->diseqc < 1) // force position 1 on the diseqc switch
 		d->diseqc = 1;
 
+	if ((d->sys == SYS_DVBS2) && (d->mtype == 0))
+		d->mtype = PSK_8;
+	if ((d->sys == SYS_DVBS) && (d->mtype == 0))
+		d->mtype = QPSK;
+
+	if ((d->sys == SYS_ATSC || d->sys == SYS_DVBC_ANNEX_B) && d->mtype == 0)
+		d->mtype = QAM_AUTO;
+
+	if ((d->sys == SYS_DVBT || d->sys == SYS_DVBT2) && d->mtype == 0)
+		d->mtype = QAM_AUTO;		
+		
 	LOG
 		("copy_dvb_parameters -> src=%d, fe=%d, freq=%d, fec=%d sr=%d, pol=%d, ro=%d, msys=%d, mtype=%d, plts=%d, bw=%d, inv=%d, pids=%s, apids=%s, dpids=%s x_pmt=%s",
 		d->diseqc, d->fe, d->freq, d->fec, d->sr, d->pol, d->ro, d->sys, d->mtype,
@@ -1014,7 +1031,7 @@ uint16_t * snr)
 //	*status = (*status & FE_HAS_LOCK) ? 1 : 0;
 	if (*status)
 	{
-		if (ioctl (fd, FE_READ_BER, ber) < 0)
+		if (ioctl(fd, FE_READ_BER, ber) < 0)
 			LOG ("ioctl FE_READ_BER failed (%s)", strerror (errno));
 
 		if (ioctl (fd, FE_READ_SIGNAL_STRENGTH, strength) < 0)
@@ -1097,8 +1114,7 @@ void find_dvb_adapter (adapter *a)
 	int na = 0;
 	char buf[100];
 	int fd;
-	int i = 0,
-		j = 0;
+	int i = 0, j = 0;
 
 	for(i = 0; i < MAX_ADAPTERS; i++)
 	{
@@ -1131,7 +1147,7 @@ void find_dvb_adapter (adapter *a)
 				return;
 		}
 	}
-	for (na; na < MAX_ADAPTERS; na++)
+	for (; na < MAX_ADAPTERS; na++)
 		a[na].pa = a[na].fn = -1;
 }
 
